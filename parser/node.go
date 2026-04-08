@@ -1060,6 +1060,8 @@ type IndexColumn struct {
 	Collation     string // Collation name for COLLATE
 	OperatorClass string
 	Expression    Expr // For functional indexes like ((CASE WHEN ...))
+
+	WithoutOverlaps bool // For PostgreSQL 18+ temporal PRIMARY KEY / UNIQUE constraints
 }
 
 func (ic IndexColumn) String() string {
@@ -1135,6 +1137,7 @@ type ForeignKeyDefinition struct {
 	OnUpdate          Ident
 	NotForReplication bool
 	ConstraintOptions *ConstraintOptions
+	Period            bool // For PostgreSQL 18+ temporal FOREIGN KEY constraints (PERIOD on last column)
 }
 
 type Policy struct {

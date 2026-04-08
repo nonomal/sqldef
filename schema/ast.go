@@ -270,6 +270,8 @@ type IndexColumn struct {
 	length        *int
 	direction     string
 	operatorClass string
+
+	withoutOverlaps bool
 }
 
 // ColumnName returns the column name if this is a simple column reference.
@@ -315,6 +317,7 @@ type ForeignKey struct {
 	onUpdate           string
 	notForReplication  bool
 	constraintOptions  *ConstraintOptions
+	period             bool
 }
 
 type Exclusion struct {

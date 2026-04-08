@@ -123,6 +123,7 @@ func parseDDL(mode GeneratorMode, ddl string, stmt parser.Statement, defaultSche
 					onUpdate:           stmt.ForeignKey.OnUpdate.Name,
 					notForReplication:  stmt.ForeignKey.NotForReplication,
 					constraintOptions:  constraintOptions,
+					period:             stmt.ForeignKey.Period,
 				},
 			}, nil
 		} else if stmt.Action == parser.AddExclusion {
@@ -513,10 +514,11 @@ func parseTable(mode GeneratorMode, stmt *parser.DDL, defaultSchema string, rawD
 			indexColumns = append(
 				indexColumns,
 				IndexColumn{
-					columnExpr:    columnExpr,
-					length:        length,
-					direction:     column.Direction,
-					operatorClass: column.OperatorClass,
+					columnExpr:      columnExpr,
+					length:          length,
+					direction:       column.Direction,
+					operatorClass:   column.OperatorClass,
+					withoutOverlaps: column.WithoutOverlaps,
 				},
 			)
 
@@ -640,6 +642,7 @@ func parseTable(mode GeneratorMode, stmt *parser.DDL, defaultSchema string, rawD
 			onUpdate:           foreignKeyDef.OnUpdate.Name,
 			notForReplication:  foreignKeyDef.NotForReplication,
 			constraintOptions:  constraintOptions,
+			period:             foreignKeyDef.Period,
 		}
 		foreignKeys = append(foreignKeys, foreignKey)
 	}
@@ -706,10 +709,11 @@ func parseIndex(stmt *parser.DDL, rawDDL string, mode GeneratorMode) (Index, err
 		indexColumns = append(
 			indexColumns,
 			IndexColumn{
-				columnExpr:    columnExpr,
-				length:        length,
-				direction:     column.Direction,
-				operatorClass: column.OperatorClass,
+				columnExpr:      columnExpr,
+				length:          length,
+				direction:       column.Direction,
+				operatorClass:   column.OperatorClass,
+				withoutOverlaps: column.WithoutOverlaps,
 			},
 		)
 	}
