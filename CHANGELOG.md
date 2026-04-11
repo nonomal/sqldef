@@ -1,3 +1,7 @@
+## [v3.11.1](https://github.com/sqldef/sqldef/compare/v3.11.0...v3.11.1) - 2026-04-11
+- chore: upgrade tagpr to v1.18.0 by @gfx in https://github.com/sqldef/sqldef/pull/1180
+- Fix partial index WHERE IN/NOT IN idempotency for unsorted values by @shiroemons in https://github.com/sqldef/sqldef/pull/1182
+
 ## [v4.0.0](https://github.com/sqldef/sqldef/compare/v3.10.1...v4.0.0) - 2026-04-08
 - Support TiDB AUTO_RANDOM column attribute by @y-kawawa in https://github.com/sqldef/sqldef/pull/1149
 - sqlite3: support strict and without rowid by @dgllghr in https://github.com/sqldef/sqldef/pull/1166
