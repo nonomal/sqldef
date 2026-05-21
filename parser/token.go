@@ -257,7 +257,7 @@ var keywords = map[string]int{
 	"index":                  INDEX,
 	"infile":                 UNUSED,
 	"input":                  INPUT,
-	"inout":                  UNUSED,
+	"inout":                  INOUT,
 	"inner":                  INNER,
 	"initially":              INITIALLY,
 	"insensitive":            UNUSED,
@@ -360,7 +360,7 @@ var keywords = map[string]int{
 	"optionally":             UNUSED,
 	"or":                     OR,
 	"order":                  ORDER,
-	"out":                    UNUSED,
+	"out":                    OUT,
 	"outer":                  OUTER,
 	"outfile":                UNUSED,
 	"output":                 OUTPUT,
@@ -965,6 +965,13 @@ func (tkn *Tokenizer) scanIdentifier(firstChar rune, isDbSystemVariable bool) (i
 			if nextID == DATA || nextID == NO {
 				return WITH_DATA_OPTION, loweredStr
 			}
+		}
+
+		// PostgreSQL treats KEY as a non-reserved keyword usable as an unquoted
+		// column name. Surface a distinct PG_KEY token so the grammar can accept
+		// `key text NOT NULL` without colliding with MySQL's inline `KEY idx_name (col)`.
+		if keywordID == KEY && tkn.mode == ParserModePostgres {
+			return PG_KEY, loweredStr
 		}
 
 		// keyword is case-insensitive

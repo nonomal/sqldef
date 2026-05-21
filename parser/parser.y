@@ -256,7 +256,7 @@ func setDDL(yylex any, ddl *DDL) {
 // DDL Tokens
 %token <str> CREATE ALTER DROP RENAME ANALYZE ADD GRANT REVOKE OPTION PRIVILEGES
 %token <str> SCHEMA TABLE INDEX MATERIALIZED VIEW TO IGNORE PRIMARY COLUMN CONSTRAINT REFERENCES SPATIAL FULLTEXT FOREIGN KEY_BLOCK_SIZE POLICY WHILE EXTENSION EXCLUDE DOMAIN
-%right <str> UNIQUE KEY
+%right <str> UNIQUE KEY PG_KEY
 %token <str> SHOW DESCRIBE EXPLAIN DATE DATA ESCAPE REPAIR OPTIMIZE TRUNCATE EXEC EXECUTE ENGINE
 %token <str> MAXVALUE PARTITION PARTITIONS REORGANIZE LESS THAN PROCEDURE TRIGGER TYPE RETURN RETURNS FUNCTION RANGE LIST HASH LINEAR COLUMNS
 %token <str> STATUS VARIABLES
@@ -288,7 +288,7 @@ func setDDL(yylex any, ddl *DDL) {
 %token <str> BLOB TINYBLOB MEDIUMBLOB LONGBLOB JSON JSONB ENUM
 %token <str> GEOMETRY POINT LINESTRING POLYGON GEOMETRYCOLLECTION MULTIPOINT MULTILINESTRING MULTIPOLYGON
 %token <str> VECTOR
-%token <str> VARIADIC ARRAY
+%token <str> VARIADIC ARRAY OUT INOUT
 %token <str> NOW GETDATE
 %token <str> BPCHAR
 
@@ -421,7 +421,7 @@ func setDDL(yylex any, ddl *DDL) {
 %type <str> ignore_opt default_opt
 %type <empty> if_not_exists_opt
 %type <expr> when_expression_opt
-%type <str> reserved_keyword non_reserved_keyword col_name_keyword type_func_name_keyword
+%type <str> reserved_keyword non_reserved_keyword col_name_keyword type_func_name_keyword key_kw
 %type <ident> sql_id reserved_sql_id extension_name, col_alias as_ci_opt
 %type <boolVal> unique_opt
 %type <expr> charset_value
@@ -506,6 +506,8 @@ func setDDL(yylex any, ddl *DDL) {
 %type <domainConstraints> domain_constraints_opt domain_constraint
 %type <functionArgs> function_args_opt function_args
 %type <functionArg> function_arg
+%type <str> function_arg_mode_opt
+%type <expr> function_arg_default_opt
 %type <str> function_return_type function_option set_value_list set_value
 %type <strs> function_options_opt function_options
 %type <arrayConstructor> array_constructor
@@ -1825,7 +1827,7 @@ alter_statement:
       IndexCols: $10,
     }
   }
-| ALTER ignore_opt TABLE ONLY table_name ADD CONSTRAINT sql_id PRIMARY KEY '(' index_column_list ')'
+| ALTER ignore_opt TABLE ONLY table_name ADD CONSTRAINT sql_id PRIMARY key_kw '(' index_column_list ')'
   {
     $$ = &DDL{
       Action: AddPrimaryKey,
@@ -3152,6 +3154,10 @@ column_definition:
   {
     $$ = &ColumnDefinition{Name: NewIdent($1, false), Type: $2}
   }
+| PG_KEY column_definition_type
+  {
+    $$ = &ColumnDefinition{Name: NewIdent($1, false), Type: $2}
+  }
 /* For SQLite3 https://www.sqlite.org/lang_keywords.html */
 | STRING column_definition_type
   {
@@ -3273,12 +3279,12 @@ column_definition_type:
     $1.AutoRandomRange = rangeBits
     $$ = $1
   }
-| column_definition_type PRIMARY KEY
+| column_definition_type PRIMARY key_kw
   {
     $1.KeyOpt = colKeyPrimary
     $$ = $1
   }
-| column_definition_type CONSTRAINT sql_id PRIMARY KEY
+| column_definition_type CONSTRAINT sql_id PRIMARY key_kw
   {
     // Named inline primary key constraint (e.g., "id INT CONSTRAINT pk_name PRIMARY KEY")
     $1.KeyOpt = colKeyPrimary
@@ -3392,7 +3398,7 @@ column_definition_type:
     $$ = $1
   }
 // for MSSQL: column-level FOREIGN KEY REFERENCES syntax
-| column_definition_type FOREIGN KEY REFERENCES table_name '(' column_list ')'
+| column_definition_type FOREIGN key_kw REFERENCES table_name '(' column_list ')'
   {
     $1.References     = $5
     $1.ReferenceNames = $7
@@ -3821,18 +3827,64 @@ function_args:
   }
 
 function_arg:
-  sql_id column_type
+  function_arg_mode_opt sql_id column_type array_opt function_arg_default_opt
   {
+    typeStr := $3.Type
+    if bool($4) {
+      typeStr += "[]"
+    }
     $$ = FunctionArg{
-      Name: $1,
-      Type: $2.Type,
+      Mode:    $1,
+      Name:    $2,
+      Type:    typeStr,
+      Default: $5,
     }
   }
-| column_type
+| function_arg_mode_opt column_type array_opt function_arg_default_opt
   {
-    $$ = FunctionArg{
-      Type: $1.Type,
+    typeStr := $2.Type
+    if bool($3) {
+      typeStr += "[]"
     }
+    $$ = FunctionArg{
+      Mode:    $1,
+      Type:    typeStr,
+      Default: $4,
+    }
+  }
+
+function_arg_mode_opt:
+  {
+    $$ = ""
+  }
+| IN
+  {
+    $$ = "IN"
+  }
+| OUT
+  {
+    $$ = "OUT"
+  }
+| INOUT
+  {
+    $$ = "INOUT"
+  }
+| VARIADIC
+  {
+    $$ = "VARIADIC"
+  }
+
+function_arg_default_opt:
+  {
+    $$ = nil
+  }
+| DEFAULT expression
+  {
+    $$ = $2
+  }
+| '=' expression
+  {
+    $$ = $2
   }
 
 function_return_type:
@@ -4493,6 +4545,14 @@ index_option:
   {
     $$ = &IndexOption{Name: $1, Value: NewStrVal($2.Name)}
   }
+/* HASH is a reserved token (used by PARTITION BY HASH) but MariaDB allows it
+ * inline as an index_type after USING, e.g. UNIQUE KEY k (k) USING HASH.
+ * Without this rule, the lexer emits the HASH token instead of an ID and the
+ * generic `USING ID` rule no longer matches. Regression introduced in #1036. */
+| USING HASH
+  {
+    $$ = &IndexOption{Name: $1, Value: NewStrVal(strings.ToUpper($2))}
+  }
 | KEY_BLOCK_SIZE equal_opt INTEGRAL
   {
     // should not be string
@@ -4636,7 +4696,7 @@ index_info:
   {
     $$ = &IndexInfo{Type: $1 + " " + $2, Name: NewIdent("", false), Vector: true}
   }
-| VECTOR KEY ID
+| VECTOR key_kw ID
   {
     $$ = &IndexInfo{Type: $1 + " " + $2, Name: $3, Vector: true}
   }
@@ -4821,7 +4881,7 @@ foreign_key_definition:
   }
 
 foreign_key_without_options:
-  CONSTRAINT sql_id_opt FOREIGN KEY sql_id_opt '(' sql_id_list ')' REFERENCES table_name '(' sql_id_list ')'
+  CONSTRAINT sql_id_opt FOREIGN key_kw sql_id_opt '(' sql_id_list ')' REFERENCES table_name '(' sql_id_list ')'
   {
     $$ = &ForeignKeyDefinition{
       ConstraintName: $2,
@@ -4832,7 +4892,7 @@ foreign_key_without_options:
     }
   }
 /* For SQLite3 // SQLite Syntax: table-constraint https://www.sqlite.org/syntax/table-constraint.html */
-| FOREIGN KEY sql_id_opt '(' sql_id_list ')' REFERENCES table_name '(' sql_id_list ')'
+| FOREIGN key_kw sql_id_opt '(' sql_id_list ')' REFERENCES table_name '(' sql_id_list ')'
   {
     $$ = &ForeignKeyDefinition{
       IndexName: $3,
@@ -4842,7 +4902,7 @@ foreign_key_without_options:
     }
   }
 /* PostgreSQL 18+ temporal FK: FOREIGN KEY (col, PERIOD range_col) REFERENCES ... (col, PERIOD range_col) */
-| CONSTRAINT sql_id_opt FOREIGN KEY sql_id_opt '(' sql_id_list ',' PERIOD reserved_sql_id ')' REFERENCES table_name '(' sql_id_list ',' PERIOD reserved_sql_id ')'
+| CONSTRAINT sql_id_opt FOREIGN key_kw sql_id_opt '(' sql_id_list ',' PERIOD reserved_sql_id ')' REFERENCES table_name '(' sql_id_list ',' PERIOD reserved_sql_id ')'
   {
     $$ = &ForeignKeyDefinition{
       ConstraintName: $2,
@@ -4853,7 +4913,7 @@ foreign_key_without_options:
       Period: true,
     }
   }
-| FOREIGN KEY sql_id_opt '(' sql_id_list ',' PERIOD reserved_sql_id ')' REFERENCES table_name '(' sql_id_list ',' PERIOD reserved_sql_id ')'
+| FOREIGN key_kw sql_id_opt '(' sql_id_list ',' PERIOD reserved_sql_id ')' REFERENCES table_name '(' sql_id_list ',' PERIOD reserved_sql_id ')'
   {
     $$ = &ForeignKeyDefinition{
       IndexName: $3,
@@ -4904,7 +4964,7 @@ match_type_opt:
   }
 
 primary_key_definition:
-  CONSTRAINT sql_id PRIMARY KEY clustered_opt '(' index_column_list ')' index_option_opt index_partition_opt
+  CONSTRAINT sql_id PRIMARY key_kw clustered_opt '(' index_column_list ')' index_option_opt index_partition_opt
   {
     $$ = &IndexDefinition{
       Info: &IndexInfo{Type: $3 + " " + $4, Name: $2, Primary: true, Unique: true, Clustered: $5},
@@ -4914,7 +4974,7 @@ primary_key_definition:
     }
   }
 /* For SQLite3 // SQLite Syntax: table-constraint https://www.sqlite.org/syntax/table-constraint.html */
-| PRIMARY KEY clustered_opt '(' index_column_list ')' index_option_opt index_partition_opt
+| PRIMARY key_kw clustered_opt '(' index_column_list ')' index_option_opt index_partition_opt
   {
     $$ = &IndexDefinition{
       Info: &IndexInfo{Type: $1 + " " + $2, Name: NewIdent("PRIMARY", false), Primary: true, Unique: true, Clustered: $3},
@@ -7694,12 +7754,26 @@ non_reserved_keyword:
 | PARTITION %prec LOWER_THAN_BY
 | ENGINE
 
+// key_kw matches both KEY (default) and PG_KEY (PostgreSQL mode), so contexts
+// like PRIMARY KEY / FOREIGN KEY / VECTOR KEY work in both dialects while
+// PostgreSQL is free to lex bare `key` as a column name.
+key_kw:
+  KEY
+  {
+    $$ = $1
+  }
+| PG_KEY
+  {
+    $$ = $1
+  }
+
 // col_name_keyword: keywords that can be used as column names in index definitions.
 // PostgreSQL allows these as unquoted identifiers in certain contexts.
 // https://www.postgresql.org/docs/current/sql-keywords-appendix.html
 col_name_keyword:
   DATE
 | KEY
+| PG_KEY
 | TIME
 | TIMESTAMP
 | VALUE

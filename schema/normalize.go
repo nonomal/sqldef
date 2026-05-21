@@ -48,6 +48,58 @@ var (
 	}
 )
 
+// effectiveTypeName returns the comparison-canonical type of a column, after applying
+// equivalences that depend on the column's full definition (charset/collate/CHECK), not
+// just its declared typeName.
+//
+// MariaDB does not have a native JSON storage type: `CREATE TABLE t (j JSON)` is rewritten
+// internally to `j longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin CHECK (json_valid(j))`,
+// and that is exactly what SHOW CREATE TABLE returns. Without this equivalence, every
+// `--dry-run` and `--export` against a MariaDB database that contains JSON columns reports a
+// spurious `CHANGE COLUMN ... json` for each one, because the desired side parses as `json`
+// while the readback parses as `longtext`.
+//
+// The normalization is applied symmetrically: only when the *other* side is also a JSON
+// column (either declared as `json` or already matching the MariaDB storage pattern). This
+// preserves comparison parity on MySQL, where the same `longtext + inline CHECK` text in a
+// user schema is stored with the CHECK lifted to a table-level constraint at readback —
+// asymmetric inline-vs-table CHECK placement that would otherwise break this fix on MySQL.
+func effectiveTypeName(col Column, other Column, mode GeneratorMode) string {
+	if mode == GeneratorModeMysql && isMariaDBJSONColumn(col) {
+		if isMariaDBJSONColumn(other) || strings.EqualFold(other.typeName, "json") {
+			return "json"
+		}
+	}
+	return normalizeTypeName(col.typeName, mode)
+}
+
+// isMariaDBJSONColumn returns true if col matches the longtext+utf8mb4_bin+json_valid()
+// shape that MariaDB emits for JSON columns.
+func isMariaDBJSONColumn(col Column) bool {
+	if !strings.EqualFold(col.typeName, "longtext") {
+		return false
+	}
+	if !strings.EqualFold(col.charset, "utf8mb4") || !strings.EqualFold(col.collate, "utf8mb4_bin") {
+		return false
+	}
+	if col.check == nil || col.check.definition == nil {
+		return false
+	}
+	funcExpr, ok := col.check.definition.(*parser.FuncExpr)
+	if !ok || !strings.EqualFold(funcExpr.Name.Name, "json_valid") || len(funcExpr.Exprs) != 1 {
+		return false
+	}
+	aliased, ok := funcExpr.Exprs[0].(*parser.AliasedExpr)
+	if !ok {
+		return false
+	}
+	colName, ok := aliased.Expr.(*parser.ColName)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(colName.Name.Name, col.name.Name)
+}
+
 // normalizeTypeName normalizes a type name using dataTypeAliases and mode-specific aliases.
 // This is the central function for all type name normalization in the generator.
 func normalizeTypeName(typeName string, mode GeneratorMode) string {
@@ -832,6 +884,15 @@ func normalizeExpr(expr parser.Expr, mode GeneratorMode) parser.Expr {
 			Operator: e.Operator,
 			Expr:     normalizeExpr(e.Expr, mode),
 		}
+	case *parser.Subquery:
+		// Recurse into subquery SELECT so that nested FROM clauses receive the
+		// same normalization as the outer SELECT (notably database-prefix
+		// stripping on MySQL — MariaDB's SHOW CREATE VIEW emits `db.table`
+		// everywhere including subquery FROM clauses, but user-written DDL
+		// rarely does, causing spurious view re-creations on every diff).
+		return &parser.Subquery{
+			Select: normalizeViewDefinition(e.Select, mode, nil),
+		}
 	case *parser.ConvertExpr:
 		// Normalize CAST(expr AS type) to expr::type (CastExpr) for consistency
 		// PostgreSQL represents both forms identically in its internal representation
@@ -975,13 +1036,13 @@ func normalizeTableExpr(expr parser.TableExpr, mode GeneratorMode) parser.TableE
 			Condition: normalizeJoinCondition(e.Condition, mode),
 		}
 	case *parser.ParenTableExpr:
-		// PostgreSQL adds parentheses around JOINs when storing views
-		// Unwrap these to get a canonical form
-		if mode == GeneratorModePostgres && len(e.Exprs) == 1 {
+		// PostgreSQL and MariaDB add parentheses around JOINs when storing views.
+		// Unwrap these to get a canonical form.
+		if (mode == GeneratorModePostgres || mode == GeneratorModeMysql) && len(e.Exprs) == 1 {
 			// Single expression in parentheses - unwrap it
 			return normalizeTableExpr(e.Exprs[0], mode)
 		}
-		// Multiple expressions or non-Postgres mode - normalize but keep parens
+		// Multiple expressions - normalize but keep parens
 		normalized := make(parser.TableExprs, len(e.Exprs))
 		for i, expr := range e.Exprs {
 			normalized[i] = normalizeTableExpr(expr, mode)

@@ -44,11 +44,6 @@ CreateOrReplaceFunctionWithTrigger:
       BEFORE INSERT OR UPDATE ON device_tests
       FOR EACH ROW EXECUTE FUNCTION check_test_type_requires_permit();
   up: |
-    CREATE TABLE device_tests (
-      id serial PRIMARY KEY,
-      test_type text,
-      permit text
-    );
     CREATE OR REPLACE FUNCTION check_test_type_requires_permit()
       RETURNS TRIGGER AS
     $$
@@ -59,6 +54,11 @@ CreateOrReplaceFunctionWithTrigger:
       RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;
+    CREATE TABLE device_tests (
+      id serial PRIMARY KEY,
+      test_type text,
+      permit text
+    );
     CREATE TRIGGER enforce_required_permit before insert OR update ON public.device_tests FOR EACH ROW EXECUTE FUNCTION check_test_type_requires_permit();
   down: |
     DROP TRIGGER enforce_required_permit ON public.device_tests;
@@ -369,5 +369,31 @@ CreateOrReplaceFunctionNamedIncrement:
       RETURN i + 1;
     END;
     $$ LANGUAGE plpgsql;
+  up: ""
+  down: ""
+
+# Argument DEFAULT values and modes: ensures functions with default-valued
+# arguments parse on the generic parser without falling back to pgquery (which
+# silently drops the function and triggers a spurious DROP on the next apply).
+CreateFunctionWithDefaultArgs:
+  legacy_ignore_quotes: false
+  current: |
+    CREATE OR REPLACE FUNCTION concat_with_default(
+      count int DEFAULT 1,
+      sep text DEFAULT '-'
+    ) RETURNS text AS $$
+    BEGIN
+      RETURN '';
+    END
+    $$ LANGUAGE plpgsql VOLATILE;
+  desired: |
+    CREATE OR REPLACE FUNCTION concat_with_default(
+      count int DEFAULT 1,
+      sep text DEFAULT '-'
+    ) RETURNS text AS $$
+    BEGIN
+      RETURN '';
+    END
+    $$ LANGUAGE plpgsql VOLATILE;
   up: ""
   down: ""
